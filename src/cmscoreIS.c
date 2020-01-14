@@ -52,7 +52,7 @@ static ESL_OPTIONS options[] = {
 };
 
 static char banner[] = "Align and score sequences with a CM by importance sampling a CM/SCFG";
-static char usage[]  = "[-options] <hpmfile> <hmmfile> <msafile>";
+static char usage[]  = "[-options] <cmfile> <hmmfile> <msafile> <score_outfile>";
 
 static void
 cmdline_failure(char *argv0, char *format, ...)
