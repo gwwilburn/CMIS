@@ -22,6 +22,7 @@
 
 /* declaration of internal functions */
 int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng, CMIS_SCORESET *cmis_ss, ESL_MSA **msa, char *scoreprogfile, char *aliprogfile, int start, int end, int totseq, int user_R, int A, int scoreprog, int aliprog, int verbose);
+int strip_flanking_inserts(ESL_MSA *msa, char *errbuf);
 
 static ESL_OPTIONS options[] = {
         /* name              type        default    env range togs  reqs  incomp            help                                                     docgroup */
@@ -52,7 +53,7 @@ static ESL_OPTIONS options[] = {
 };
 
 static char banner[] = "Align and score sequences with a CM by importance sampling a CM/SCFG";
-static char usage[]  = "[-options] <cmfile> <hmmfile> <msafile> <score_outfile>";
+static char usage[]  = "[-options] <cmfile> <hmmfile> <seqfile> <score_outfile>";
 
 static void
 cmdline_failure(char *argv0, char *format, ...)
@@ -191,7 +192,19 @@ int main (int argc, char *argv[]) {
    cm_file_Close(cmfp);
 
    /* configure CM */
+   cm->config_opts |= CM_CONFIG_SCANMX;
    cm_Configure(cm, errbuf, -1);
+
+   /* set search options */
+   cm->search_opts |= CM_SEARCH_INSIDE;
+   cm->search_opts |= CM_SEARCH_NONBANDED;
+
+   /* initlalize logsum lookup table magic */
+   init_ilogsum();
+   FLogsumInit();
+
+   /* print all configuration flags */
+   DumpCMFlags(stdout, cm);
 
    /* open the sequence file */
    status = esl_sqfile_OpenDigital(abc, seqfile, format, NULL, &sqfp);
@@ -269,6 +282,37 @@ int main (int argc, char *argv[]) {
    return status;
 }
 
+/* Function: Calculate_IS_Scores()
+ *
+ * Purpose:  Align and score sequences in <sq> with covariance model <cm>
+ *           using the importance sampling alignment algorithm.
+ *           Paths are sampled from <hmm>.
+ *           Also score sequences with cm_dpalign.c::cm_InsideAlign() and
+ *           cm_dpsearch.c::RefFInsideAlign() for comparison.
+ *
+ * args:    cm            - covariance model
+ *          hmm           - hidden markov model for sampling paths
+ *          sq            - sequences to be scored and alignecd
+ *          rng           - random number generator
+ *          cmis_ss       - object for keeping scoring details
+ *          msa           - Optional output MSA, pass NULL if you don't want it.
+ *          scoreprogfile - path of optional .csv file for keeping track of IS scoring progress
+ *          aliprogfile   - path of optional .csv file for keeping track of IS alignment progress
+ *          start         - index of first sequence in <sq> scored/aligned
+ *          end           - index of last sequence in <sq> scored/align
+ *          totseq        - total number of sequences scored (should be <end> - <start>)
+ *          user_R        - number of paths sampled/sequence (default is 1000)
+ *          A             - Boolean for creating an MSA <msa>
+ *          scoreprog     - Boolean for creating score progress file <scoreprogfile>
+ *          aliprog       - Boolean for creating alignment progress file <aliprogfile>
+ *          verbose       - Boolean for verbose mode (not yet implemented)
+ *
+ * Returns: eslOK on success
+ *
+ * */
+
+
+
 
 int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng, CMIS_SCORESET *cmis_ss, ESL_MSA **msa, char *scoreprogfile, char *aliprogfile, int start, int end, int totseq, int user_R, int A, int scoreprog, int aliprog, int verbose)
 {
@@ -283,9 +327,12 @@ int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng,
    FILE           *scoreprogfp = NULL;                      /* score progress output file (--scoreprog)    */
    FILE           *aliprogfp   = NULL;                      /* alignment progress output file (--aliprog)  */
    int             i,j,k;                                   /* sequence indices                            */
-   int             r;                                       /* alignment sample index                      */
+   int             b;                                       /* batch index                                 */
+   int             r,s;                                     /* alignment sample indices                    */
    int             cpos;                                    /* cm node index                               */
    int             R           = 1000;                      /* number of sampled alignments per sequence   */
+   int             R_batch     = 1000;                      /* sampled alignment batch size                */
+   int             N_batch;                                 /* total number of batches                     */
    int             nBetter;                                 /* number of better alignments we've found     */
    float           fsc;                                     /* forward partial log-odds score, in nats     */
    float           ntsc;                                    /* hmmer null transition score, in nats        */
@@ -293,10 +340,16 @@ int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng,
    float           cmsc_ld;                                 /* cm log odds S(x, pi), in bits               */
    float           cmsc_max;                                /* best cm log odds S(x, pi) for all paths     */
    float           insc;                                    /* log-odds score for inside algorithm         */
+   float           scansc;                                  /* log-odds score for inside scanning alg      */
    float           ls;                                      /* log of importance sampling sum              */
    float           ld;                                      /* importance sampling log odds score S(x)     */
+   CM_TOPHITS     *hitlist    = cm_tophits_Create();        /* top hits from RefFInsideScan()              */
    int             status;                                  /* easel return code                           */
    char            errbuf[eslERRBUFSIZE];                   /* buffer for easel errors                     */
+
+   /* variables for testing insert masking */
+   //int             outfmt     = eslMSAFILE_STOCKHOLM;       /* alignment output format (-A)                */
+   //FILE           *afp        = NULL;                       /* output alignment file (-A)               */
 
 
    /* if score progress file is requested, open it */
@@ -314,10 +367,15 @@ int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng,
    /* set number of samples */
    if (user_R > 0) R = user_R;
 
+
+   /* calculate number of batches */
+   N_batch = (R / R_batch) + (R % R_batch != 0);
+   fprintf(stdout, "N_batch: %d\n", N_batch);
+
    /* allocate space for dummy trace  and sequence arrays */
-   ESL_ALLOC(tr_dummy, sizeof(P7_TRACE *) * R);
-   ESL_ALLOC(sq_dummy, sizeof(P7_TRACE *) * R+1);
-   for (r = 0; r < R; r++) {
+   ESL_ALLOC(tr_dummy, sizeof(P7_TRACE *) * R_batch);
+   ESL_ALLOC(sq_dummy, sizeof(P7_TRACE *) * R_batch+1);
+   for (r = 0; r < R_batch; r++) {
       tr_dummy[r] = p7_trace_Create();
       sq_dummy[r] = esl_sq_CreateDigital(hmm->abc);
    }
@@ -340,7 +398,6 @@ int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng,
    /* set up cm for scoring */
    if((status = CMLogoddsify(cm)) != eslOK) ESL_FAIL(status, errbuf, "problem logodisfying CM");
 
-
    /* outer loop over sequences */
    for (i=start; i < end; i++) {
 
@@ -356,12 +413,7 @@ int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng,
          esl_sq_Copy(sq[i], out_sq[j]);
       }
 
-
-
       /* declare variables that are re-initialized at each iteration of outer loop */
-      ESL_MSA        *msa_dummy;                            /* MSA of different aligmnetss of seq i  */
-      Parsetree_t    *mtr       = NULL;                     /* the guide tree                        */
-      Parsetree_t   **pstr      = NULL;                     /* array of parse trees created from MSA */
       CM_MX          *mx        = cm_mx_Create(cm->M);      /* DP matrix for inside algorithm)       */
 
       /* Set the profile and null model's target length models */
@@ -380,122 +432,156 @@ int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng,
       /* calculate Inside log odds score */
       cm_InsideAlign(cm, errbuf, sq[i]->dsq, sq[i]->n, 512.0, mx, &insc);
 
+      if ((RefFInsideScan(cm, errbuf, cm->smx, SMX_NOQDB, sq[i]->dsq, 1, sq[i]->n,
+                          -eslINFINITY, hitlist, FALSE, -eslINFINITY, NULL, NULL, NULL,
+                          &scansc) != eslOK)) ESL_FAIL(status, errbuf, "problem running RefFInside()");
+
+      //fprintf(stdout, "seq: %s, inside scan score: %.4f, seq_from: %d; seq_to: %d\n", sq[i]->name, scansc, hitlist->hit[0]->start, hitlist->hit[0]->stop);
+      //cm_tophits_Dump(stdout, hitlist);
+      cm_tophits_Reuse(hitlist);
       /* allocate variables to store sequence-alignment log-odds scores */
       double *pr;
       ESL_ALLOC(pr, R*sizeof(double));
       esl_vec_DSet(pr, R, 0.0);
 
+      /* intermediate loop: inner loop over batches of sampled alignments */
+      for (b = 0; b < N_batch; b++) {
+         ESL_MSA        *msa_dummy;                            /* MSA of different aligmnetss of seq i  */
+         Parsetree_t    *mtr       = NULL;                     /* the guide tree                        */
+         Parsetree_t   **pstr      = NULL;                     /* array of parse trees created from MSA */
+
+         /* inner loop 1: sample alignments from HMM */
+         for (s = 0;  s < R_batch; s++) {
+            /* calculte overall sample number */
+            r = b*R_batch + s;
+
+            /* if we've sampled as much as requested, skip inner loop 1 */
+            if (r >= R) break;
+            //fprintf(stdout, "\ti: %d, b: %d, s: %d, r: %d\n", i, b, s, r);
+
+            /* copy sequence into dummy array */
+            esl_sq_Copy(sq[i], sq_dummy[s]);
+
+            /* get stochastic traceback */
+            p7_GStochasticTrace(rng, sq[i]->dsq, sq[i]->n, gm, fwd, tr_dummy[s]);
+
+            //p7_trace_Dump(stdout, tr_dummy[r], gm, sq[i]->dsq);
+
+            /* get HMM score S(x,pi) for this seq, trace */
+            p7_trace_Score(tr_dummy[s], sq[i]->dsq, gm, &hmmsc_ld);
+
+            /* convert score to bits, put in  array */
+            pr[r] -= (hmmsc_ld) /  eslCONST_LOG2;
+
+         }
+
+         /* in between loops: convert traces to MSA to parse trees */
+         /* convert traces to ESL_MSA */
+         msaopts |= p7_ALL_CONSENSUS_COLS; /* keep all consensus columns                 */
+         msaopts |= p7_DIGITIZE;           /* make digital msa (required for guide tree) */
+         p7_tracealign_Seqs(sq_dummy, tr_dummy, R_batch, hmm->M, msaopts, hmm, &msa_dummy);
+
+         /* map cm's SS_cons to MSA */
+         ESL_ALLOC(msa_dummy->ss_cons, (sizeof(char) * (msa_dummy->alen+1)));
+         cpos = 0;
+         for (k = 0; k <= msa_dummy->alen; k++) {
+            if (msa_dummy->rf[k] == 120) {
+               msa_dummy->ss_cons[k] = cm->cmcons->cstr[cpos];
+               cpos++;
+            }
+            else {
+               msa_dummy->ss_cons[k] = '.';
+            }
+         }
+         msa_dummy->ss_cons[msa_dummy->alen] = '\0';
+
+         /* strip flanking inserts from MSA */
+         //strip_flanking_inserts(msa_dummy, errbuf);
+
+         /* create guide tree */
+         status = HandModelmaker(msa_dummy, errbuf,
+                                 TRUE,  /* use_rf */
+                                 FALSE, /* use_el, no */
+                                 FALSE, /* use_wts, irrelevant */
+                                 0.5,   /* gapthresh, irrelevant */
+                                 NULL,  /* returned CM, irrelevant */
+                                 &mtr); /* guide tree */
+         if (status != eslOK) return status;
+
+         /* create parse tree alignment from MSA */
+         Alignment2Parsetrees(msa_dummy, cm, mtr, errbuf, NULL, &pstr);
+
+         /* inner loop 2: score traces with CM */
+         for (s = 0; s < R_batch; s++) {
+           /* calculate overall sample number */
+            r = b*R_batch + s;
+
+            /* if we've sampled enough, go skip scoring and go to clean up */
+            if (r >= R) goto cleanup;
+
+            //fprintf(stdout, "\ti: %d, b: %d, s: %d, r: %d\n", i, b, s, r);
+            /* copy sequence into dummy array */
+            //ParsetreeDump(stdout, pstr[r], cm, sq[i]->dsq);
+            ///* score this sequence and alignment */
+            ParsetreeScore(cm,
+                           NULL,
+                           errbuf,
+                           pstr[s],
+                           sq[i]->dsq,
+                           0,
+                           &cmsc_ld,
+                           NULL,
+                           NULL,
+                           NULL,
+                           NULL);
+
+            pr[r] += cmsc_ld;
+
+            /* if requested, track intermediate scoring progress */
+            if (( (r+1)  % 10000 == 0) && (scoreprog)) {
+
+               esl_vec_DSortIncreasing(pr, r+1);
+               float ls = esl_vec_DLog2Sum(pr, r+1);
+               float ld = ((fsc - logf(r+1) ) / eslCONST_LOG2) + ls;
 
 
-      /* inner loop 1: sample alignments from hmm */
-      for (r = 0; r < R; r++) {
+               fprintf(scoreprogfp, "%s,%d,%.2f,%.2f\n", sq[i]->name, r, insc, ld);
 
-         /* copy sequence into dummy array */
-         esl_sq_Copy(sq[i], sq_dummy[r]);
 
-         /* get stochastic traceback */
-         p7_GStochasticTrace(rng, sq[i]->dsq, sq[i]->n, gm, fwd, tr_dummy[r]);
+            }
 
-         //p7_trace_Dump(stdout, tr_dummy[r], gm, sq[i]->dsq);
+            /* for output alignment , see if we've got a better path */
+            if (A && cmsc_ld > cmsc_max) {
+               cmsc_max = cmsc_ld;
 
-         /* get HMM score S(x,pi) for this seq, trace */
-         p7_trace_Score(tr_dummy[r], sq[i]->dsq, gm, &hmmsc_ld);
+               /* if we're tracking alignment progress, print S(x,pi) of new best alignment */
+               if (aliprog) fprintf(aliprogfp, "%s,%d,%.2f\n", sq[i]->name, r, cmsc_max);
 
-         /* convert score to bits, put in  array */
-         pr[r] -= (hmmsc_ld) /  eslCONST_LOG2;
+               /* if we've already created out_tr[j], free it before recreating it */
+               if (nBetter > 0 ) p7_trace_Destroy(out_tr[j]);
+               out_tr[j] = cmis_trace_Clone(tr_dummy[s]);
+               nBetter++;
+            }
+            //fprintf(stdout, "\talignment: %d, hmmsc_ld: %.4f, cmsc_ld: %.4f\n,", r, hmmsc_ld /  eslCONST_LOG2, cmsc_ld);
+
+            //fprintf(stdout, "CM score for sequence %d and alignment %d: %.4f\n", i, r, cmsc_ld);
+
+            /* clean up for next iteration of middle loop */
+            cleanup: p7_trace_Reuse(tr_dummy[s]);
+            esl_sq_Reuse(sq_dummy[s]);
+            FreeParsetree(pstr[s]);
+         }
+
+         //fprintf(stdout, "i: %d, b: %d\n", i, b);
+
+         /* clean up for next iteration of middle loop */
+         esl_msa_Destroy(msa_dummy);
+         free(pstr);
+         FreeParsetree(mtr);
 
       }
-
-      /* convert traces to ESL_MSA */
-      msaopts |= p7_ALL_CONSENSUS_COLS; /* keep all consensus columns                 */
-      msaopts |= p7_DIGITIZE;           /* make digital msa (required for guide tree) */
-      p7_tracealign_Seqs(sq_dummy, tr_dummy, R, hmm->M, msaopts, hmm, &msa_dummy);
-
-      /* map cm's SS_cons to MSA */
-      ESL_ALLOC(msa_dummy->ss_cons, (sizeof(char) * (msa_dummy->alen+1)));
-      cpos = 0;
-      for (k = 0; k <= msa_dummy->alen; k++) {
-         if (msa_dummy->rf[k] == 120) {
-            msa_dummy->ss_cons[k] = cm->cmcons->cstr[cpos];
-            cpos++;
-         }
-         else {
-            msa_dummy->ss_cons[k] = '.';
-         }
-      }
-      msa_dummy->ss_cons[msa_dummy->alen] = '\0';
-
-      /* create guide tree */
-      status = HandModelmaker(msa_dummy, errbuf,
-                              TRUE,  /* use_rf */
-                              FALSE, /* use_el, no */
-                              FALSE, /* use_wts, irrelevant */
-                              0.5,   /* gapthresh, irrelevant */
-                              NULL,  /* returned CM, irrelevant */
-                              &mtr); /* guide tree */
-      if (status != eslOK) return status;
-
-      /* create parse tree alignment from MSA */
-      Alignment2Parsetrees(msa_dummy, cm, mtr, errbuf, NULL, &pstr);
-
-      /* inner loop 2: score traces with CM */
-      for (r = 0; r < R; r++) {
-
-         //ParsetreeDump(stdout, pstr[r], cm, sq[i]->dsq);
-
-         /* score this sequence and alignment */
-         ParsetreeScore(cm,
-                        NULL,
-                        errbuf,
-                        pstr[r],
-                        sq[i]->dsq,
-                        0,
-                        &cmsc_ld,
-                        NULL,
-                        NULL,
-                        NULL,
-                        NULL);
-
-         pr[r] += cmsc_ld;
-
-         /* if requested, track intermediate scoring progress */
-         if (( (r+1)  % 10000 == 0) && (scoreprog)) {
-
-            esl_vec_DSortIncreasing(pr, r+1);
-            float ls = esl_vec_DLog2Sum(pr, r+1);
-            float ld = ((fsc - logf(r+1) ) / eslCONST_LOG2) + ls;
-
-
-            //fprintf(stdout, "\n\n\t## intermediate details for sequence %s, iteration %d\n", sq[i]->name, r);
-            fprintf(scoreprogfp, "%s,%d,%.2f,%.2f\n", sq[i]->name, r, insc, ld);
-
-
-         }
-
-         /* for output alignment , see if we've got a better path */
-         if (A && cmsc_ld > cmsc_max) {
-            cmsc_max = cmsc_ld;
-
-            /* if we're tracking alignment progress, print S(x,pi) of new best alignment */
-            if (aliprog) fprintf(aliprogfp, "%s,%d,%.2f\n", sq[i]->name, r, cmsc_max);
-
-            /* if we've already created out_tr[j], free it before recreating it */
-            if (nBetter > 0 ) p7_trace_Destroy(out_tr[j]);
-            out_tr[j] = cmis_trace_Clone(tr_dummy[r]);
-            nBetter++;
-         }
-         //fprintf(stdout, "\talignment: %d, hmmsc_ld: %.4f, cmsc_ld: %.4f\n,", r, hmmsc_ld /  eslCONST_LOG2, cmsc_ld);
-
-         //fprintf(stdout, "CM score for sequence %d and alignment %d: %.4f\n", i, r, cmsc_ld);
-         /* clean up for next iteration of outer loop */
-         p7_trace_Reuse(tr_dummy[r]);
-         esl_sq_Reuse(sq_dummy[r]);
-         FreeParsetree(pstr[r]);
-      }
-
 
       /* calculate IS approximation for this sequence */
-
       /* sort to increase accuracy if LogSum */
       esl_vec_DSortIncreasing(pr, R);
 
@@ -506,19 +592,18 @@ int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng,
       ld = ((fsc - logf(R) ) / eslCONST_LOG2) + ls;
 
       /* add scoring info to scoreset object */
-      cmis_ss->sqname[j]  = sq[i]->name;
-      cmis_ss->R[j]       = R;
-      cmis_ss->fsc[j]     = fsc / eslCONST_LOG2;
-      cmis_ss->ntsc[j]    = ntsc / eslCONST_LOG2;
-      cmis_ss->insc[j]    = insc;
-      cmis_ss->cmis_ld[j] = ld;
+      cmis_ss->sqname[j]   = sq[i]->name;
+      cmis_ss->R[j]        = R;
+      cmis_ss->fsc[j]      = fsc / eslCONST_LOG2;
+      cmis_ss->ntsc[j]     = ntsc / eslCONST_LOG2;
+      cmis_ss->insc[j]     = insc;
+      cmis_ss->scansc[j]   = scansc;
+      cmis_ss->seq_from[j] = (int) hitlist->hit[0]->start;
+      cmis_ss->seq_to[j]   = (int) hitlist->hit[0]->stop;
+      cmis_ss->cmis_ld[j]  = ld;
 
 
       /* clean up for next iteration of outer loop */
-
-      esl_msa_Destroy(msa_dummy);
-      free(pstr);
-      FreeParsetree(mtr);
       cm_mx_Destroy(mx);
       free(pr);
 
@@ -541,17 +626,65 @@ int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng,
       free(out_sq);
    }
 
-   for (r = 0; r < R; r++) {
-      esl_sq_Destroy(sq_dummy[r]);
+   for (s = 0; s < R_batch; s++) {
+      esl_sq_Destroy(sq_dummy[s]);
    }
    free(sq_dummy);
-   p7_trace_DestroyArray(tr_dummy, R);
+   p7_trace_DestroyArray(tr_dummy, R_batch);
    p7_profile_Destroy(gm);
    p7_bg_Destroy(bg);
    p7_gmx_Destroy(fwd);
+   cm_tophits_Destroy(hitlist);
    return eslOK;
 
    ERROR:
       return status;
 }
 
+int strip_flanking_inserts(ESL_MSA *msa, char *errbuf) {
+   int *useme  = NULL;   /* mask for keeping MSA columns */
+   int apos;             /* msa column index             */
+   int status;           /* easel return code            */
+   int rflen   = 0;      /* total number of match cols   */
+   int nrf     = 0;      /* rf column idx                */
+
+   /* make sure we have an RF line */
+   if(msa->rf == NULL) ESL_FAIL(eslEINVAL, errbuf, "Error, trying to map RF positions to alignment positions, but msa->rf is NULL.");
+
+   /* allocate memory for useme */
+   ESL_ALLOC(useme, sizeof(int) * msa->alen);
+   /* set all elements of useme to TRUE to start */
+   esl_vec_ISet(useme, msa->alen, TRUE);
+
+   /* loop 1: count RF columns  */
+   for (apos = 0; apos < msa->alen; apos++) {
+       if ((! esl_abc_CIsGap(msa->abc, msa->rf[apos])) &&
+          (! esl_abc_CIsMissing(msa->abc, msa->rf[apos])) &&
+          (! esl_abc_CIsNonresidue(msa->abc, msa->rf[apos]))) {
+          rflen++;
+       }
+
+   }
+
+   /* loop 2: create mask */
+   for (apos = 0; apos < msa->alen; apos++) {
+      if ((! esl_abc_CIsGap(msa->abc, msa->rf[apos])) &&
+         (! esl_abc_CIsMissing(msa->abc, msa->rf[apos])) &&
+         (! esl_abc_CIsNonresidue(msa->abc, msa->rf[apos]))) {
+         nrf++;
+      }
+      else {
+         if (nrf == 0 || nrf == rflen) useme[apos] = FALSE;
+      }
+
+   }
+
+   /* apply mask */
+   if ((status = esl_msa_ColumnSubset(msa, errbuf, useme)) != eslOK) esl_fatal(errbuf);
+
+   free(useme);
+   return eslOK;
+   ERROR:
+      return status;
+
+}
