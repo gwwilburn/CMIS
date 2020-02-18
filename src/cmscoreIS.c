@@ -23,6 +23,8 @@
 /* declaration of internal functions */
 int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng, CMIS_SCORESET *cmis_ss, ESL_MSA **msa, char *scoreprogfile, char *aliprogfile, int start, int end, int totseq, int user_R, int A, int scoreprog, int aliprog, int verbose);
 int strip_flanking_inserts(ESL_MSA *msa, char *errbuf);
+int map_ss_cons(CM_t *cm, ESL_MSA *msa, char *errbuf);
+int find_jumps(double *pr, int r, int R_batch, ESL_SQ *name, P7_TRACE **tr, P7_HMM *hmm, P7_PROFILE *gm, float fsc, CM_t *cm, char *errbuf);
 
 static ESL_OPTIONS options[] = {
         /* name              type        default    env range togs  reqs  incomp            help                                                     docgroup */
@@ -312,8 +314,6 @@ int main (int argc, char *argv[]) {
  * */
 
 
-
-
 int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng, CMIS_SCORESET *cmis_ss, ESL_MSA **msa, char *scoreprogfile, char *aliprogfile, int start, int end, int totseq, int user_R, int A, int scoreprog, int aliprog, int verbose)
 {
    P7_PROFILE     *gm          = NULL;                      /* h3 profile model                            */
@@ -326,10 +326,9 @@ int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng,
    ESL_SQ        **out_sq      = NULL;                      /* traces used to construct output msa (-A)    */
    FILE           *scoreprogfp = NULL;                      /* score progress output file (--scoreprog)    */
    FILE           *aliprogfp   = NULL;                      /* alignment progress output file (--aliprog)  */
-   int             i,j,k;                                   /* sequence indices                            */
+   int             i,j;                                     /* sequence indices                            */
    int             b;                                       /* batch index                                 */
    int             r,s;                                     /* alignment sample indices                    */
-   int             cpos;                                    /* cm node index                               */
    int             R           = 1000;                      /* number of sampled alignments per sequence   */
    int             R_batch     = 1000;                      /* sampled alignment batch size                */
    int             N_batch;                                 /* total number of batches                     */
@@ -341,6 +340,7 @@ int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng,
    float           cmsc_max;                                /* best cm log odds S(x, pi) for all paths     */
    float           insc;                                    /* log-odds score for inside algorithm         */
    float           scansc;                                  /* log-odds score for inside scanning alg      */
+   float           ldprev;                                  /* previous IS log-odds score                  */
    float           ls;                                      /* log of importance sampling sum              */
    float           ld;                                      /* importance sampling log odds score S(x)     */
    CM_TOPHITS     *hitlist    = cm_tophits_Create();        /* top hits from RefFInsideScan()              */
@@ -348,9 +348,8 @@ int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng,
    char            errbuf[eslERRBUFSIZE];                   /* buffer for easel errors                     */
 
    /* variables for testing insert masking */
-   //int             outfmt     = eslMSAFILE_STOCKHOLM;       /* alignment output format (-A)                */
-   //FILE           *afp        = NULL;                       /* output alignment file (-A)               */
-
+   //int             outfmt     = eslMSAFILE_STOCKHOLM;       /* alignment output format (-A)              */
+   //FILE           *afp        = NULL;                       /* output alignment file (-A)                */
 
    /* if score progress file is requested, open it */
    if (scoreprog) {
@@ -402,6 +401,7 @@ int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng,
    for (i=start; i < end; i++) {
 
       nBetter = 0;
+      ldprev = 0.0;
 
       /* index for score set: must start at 0 */
       j=i-start;
@@ -438,11 +438,16 @@ int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng,
 
       //fprintf(stdout, "seq: %s, inside scan score: %.4f, seq_from: %d; seq_to: %d\n", sq[i]->name, scansc, hitlist->hit[0]->start, hitlist->hit[0]->stop);
       //cm_tophits_Dump(stdout, hitlist);
+
       cm_tophits_Reuse(hitlist);
+
       /* allocate variables to store sequence-alignment log-odds scores */
       double *pr;
       ESL_ALLOC(pr, R*sizeof(double));
       esl_vec_DSet(pr, R, 0.0);
+      double *pr_unsorted;
+      ESL_ALLOC(pr_unsorted, R*sizeof(double));
+
 
       /* intermediate loop: inner loop over batches of sampled alignments */
       for (b = 0; b < N_batch; b++) {
@@ -465,8 +470,6 @@ int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng,
             /* get stochastic traceback */
             p7_GStochasticTrace(rng, sq[i]->dsq, sq[i]->n, gm, fwd, tr_dummy[s]);
 
-            //p7_trace_Dump(stdout, tr_dummy[r], gm, sq[i]->dsq);
-
             /* get HMM score S(x,pi) for this seq, trace */
             p7_trace_Score(tr_dummy[s], sq[i]->dsq, gm, &hmmsc_ld);
 
@@ -482,21 +485,12 @@ int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng,
          p7_tracealign_Seqs(sq_dummy, tr_dummy, R_batch, hmm->M, msaopts, hmm, &msa_dummy);
 
          /* map cm's SS_cons to MSA */
-         ESL_ALLOC(msa_dummy->ss_cons, (sizeof(char) * (msa_dummy->alen+1)));
-         cpos = 0;
-         for (k = 0; k <= msa_dummy->alen; k++) {
-            if (msa_dummy->rf[k] == 120) {
-               msa_dummy->ss_cons[k] = cm->cmcons->cstr[cpos];
-               cpos++;
-            }
-            else {
-               msa_dummy->ss_cons[k] = '.';
-            }
-         }
-         msa_dummy->ss_cons[msa_dummy->alen] = '\0';
+         map_ss_cons(cm, msa_dummy, errbuf);
 
-         /* strip flanking inserts from MSA */
-         //strip_flanking_inserts(msa_dummy, errbuf);
+         /* HACK: write sampled paths to MSA for debugging */
+         //afp = fopen("DS3881.sto", "w");
+         //esl_msafile_Write(afp, msa_dummy, outfmt);
+         //fclose(afp);
 
          /* create guide tree */
          status = HandModelmaker(msa_dummy, errbuf,
@@ -516,13 +510,13 @@ int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng,
            /* calculate overall sample number */
             r = b*R_batch + s;
 
-            /* if we've sampled enough, go skip scoring and go to clean up */
+            /* if we've sampled enough, skip scoring and go to clean up */
             if (r >= R) goto cleanup;
 
-            //fprintf(stdout, "\ti: %d, b: %d, s: %d, r: %d\n", i, b, s, r);
             /* copy sequence into dummy array */
             //ParsetreeDump(stdout, pstr[r], cm, sq[i]->dsq);
-            ///* score this sequence and alignment */
+
+            /* score this sequence and alignment */
             ParsetreeScore(cm,
                            NULL,
                            errbuf,
@@ -537,19 +531,6 @@ int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng,
 
             pr[r] += cmsc_ld;
 
-            /* if requested, track intermediate scoring progress */
-            if (( (r+1)  % 10000 == 0) && (scoreprog)) {
-
-               esl_vec_DSortIncreasing(pr, r+1);
-               float ls = esl_vec_DLog2Sum(pr, r+1);
-               float ld = ((fsc - logf(r+1) ) / eslCONST_LOG2) + ls;
-
-
-               fprintf(scoreprogfp, "%s,%d,%.2f,%.2f\n", sq[i]->name, r, insc, ld);
-
-
-            }
-
             /* for output alignment , see if we've got a better path */
             if (A && cmsc_ld > cmsc_max) {
                cmsc_max = cmsc_ld;
@@ -558,23 +539,37 @@ int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng,
                if (aliprog) fprintf(aliprogfp, "%s,%d,%.2f\n", sq[i]->name, r, cmsc_max);
 
                /* if we've already created out_tr[j], free it before recreating it */
-               if (nBetter > 0 ) p7_trace_Destroy(out_tr[j]);
+               if (nBetter > 0) p7_trace_Destroy(out_tr[j]);
                out_tr[j] = cmis_trace_Clone(tr_dummy[s]);
                nBetter++;
             }
-            //fprintf(stdout, "\talignment: %d, hmmsc_ld: %.4f, cmsc_ld: %.4f\n,", r, hmmsc_ld /  eslCONST_LOG2, cmsc_ld);
 
-            //fprintf(stdout, "CM score for sequence %d and alignment %d: %.4f\n", i, r, cmsc_ld);
+         }
 
-            /* clean up for next iteration of middle loop */
-            cleanup: p7_trace_Reuse(tr_dummy[s]);
+         /* if requested, track intermediate scoring progress for this batch */
+         if (scoreprog) {
+
+            esl_vec_DCopy(pr,r+1, pr_unsorted);
+            esl_vec_DSortIncreasing(pr, r+1);
+            float ls = esl_vec_DLog2Sum(pr, r+1);
+            float ld = ((fsc - logf(r+1) ) / eslCONST_LOG2) + ls;
+
+            fprintf(scoreprogfp, "%s,%d,%.2f,%.2f\n", sq[i]->name, r, insc, ld);
+
+            /* look for paths that make IS scores jump */
+            if ( (r > 1e6) && (ld-ldprev > 0.25))  find_jumps(pr_unsorted, r, R_batch, sq[i], tr_dummy, hmm, gm, fsc, cm, errbuf);
+
+            ldprev = ld;
+         }
+
+
+         /* clean up for next iteration of middle loop */
+         cleanup: for (s = 0; s < R_batch; s++) {
+            p7_trace_Reuse(tr_dummy[s]);
             esl_sq_Reuse(sq_dummy[s]);
             FreeParsetree(pstr[s]);
          }
 
-         //fprintf(stdout, "i: %d, b: %d\n", i, b);
-
-         /* clean up for next iteration of middle loop */
          esl_msa_Destroy(msa_dummy);
          free(pstr);
          FreeParsetree(mtr);
@@ -606,6 +601,7 @@ int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng,
       /* clean up for next iteration of outer loop */
       cm_mx_Destroy(mx);
       free(pr);
+      free(pr_unsorted);
 
    }
 
@@ -641,49 +637,197 @@ int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng,
       return status;
 }
 
-int strip_flanking_inserts(ESL_MSA *msa, char *errbuf) {
-   int *useme  = NULL;   /* mask for keeping MSA columns */
-   int apos;             /* msa column index             */
-   int status;           /* easel return code            */
-   int rflen   = 0;      /* total number of match cols   */
-   int nrf     = 0;      /* rf column idx                */
 
-   /* make sure we have an RF line */
-   if(msa->rf == NULL) ESL_FAIL(eslEINVAL, errbuf, "Error, trying to map RF positions to alignment positions, but msa->rf is NULL.");
+/* Function: find_jumps()
+ *
+ * Purpose:  Poor importance sampling often shows sudden "jumps" in bitscore
+ *           due to a single sample. Given a set of <R_batch> sampled paths
+ *           of sequence <sq> through model <hmm>, find the path(s) that
+ *           cause(s) the jump in score. Print S_HMM(x,pi) and S_CM(x,pi) to
+ *           stdout. Also, output the alignment to an output msafile in the
+ *           current working directly.
+ *
+ *           In case this isn't clear, this function is mostly for debugging.
+ *           It's only called with the --scoreprog option set.
+ *
+ *
+ *
+ * args:    pr_unsorted   - vector containing ratios of bitscores. At least
+ *                          the last <R_batch> elements are in the order in
+ *                          which they were sampled.
+ *          r             - sample index of the **last** path in the batch.
+ *          sq            - sequence we are scoring
+ *          tr            - <R_batch>-sized trace array with batch of sampled
+ *                          paths.
+ *          hmm           - HMM used for generating paths.
+ *          gm            - profile configured with <hmm>, <sq>->L.
+ *          fsc           - forward score of <sq> under HMM, in nats.
+ *          cm            - cm, only used here for mapping ss_cons to output
+ *                          MSA('s)
+ *          errbuf        - Error information. Feature more for the future tbh.
+ *
+ * Returns: eslOK on success, eslERROR if call to map_ss_cons() has issues.
+ *
+ * */
 
-   /* allocate memory for useme */
-   ESL_ALLOC(useme, sizeof(int) * msa->alen);
-   /* set all elements of useme to TRUE to start */
-   esl_vec_ISet(useme, msa->alen, TRUE);
+int find_jumps(double *pr_unsorted, int r, int R_batch, ESL_SQ *sq, P7_TRACE **tr, P7_HMM *hmm, P7_PROFILE *gm, float fsc, CM_t *cm, char *errbuf){
+   double    *pr_sorted;                                  /* vector of log-odds ratios, sorted from largest to smallest */
+   float      ls;                                         /* log_sum of pr_sorted                                       */
+   float      ld;                                         /* IS log odds score                                          */
+   float      ldprev;                                     /* Previous iteration's IS log-odds score                     */
+   float      hmmsc_ld;                                   /* log-odds score of a sequence and path given <hmm>          */
+   int        s,t;                                        /* IS iteration indices                                       */
+   P7_TRACE **out_tr;                  /* 1-element trace array for outputting path to an MSA        */
+   ESL_SQ   **out_sq;                  /* 1-element seq array for outputting path to an MSA          */
+   ESL_MSA   *out_msa;                  /* output MSA object                                          */
+   FILE      *afp                = NULL;                  /* output alignment file                                      */
+   int        msaopts            = 0;                     /* options for creating an MSA                                */
+   char       out_msa_path[100];                          /* output MSA filepath                                        */
+   int        outfmt             = eslMSAFILE_STOCKHOLM;  /* output MSA format. I am unwavering on this matter.         */
+   int        status;                                     /* esl return code                                            */
 
-   /* loop 1: count RF columns  */
-   for (apos = 0; apos < msa->alen; apos++) {
-       if ((! esl_abc_CIsGap(msa->abc, msa->rf[apos])) &&
-          (! esl_abc_CIsMissing(msa->abc, msa->rf[apos])) &&
-          (! esl_abc_CIsNonresidue(msa->abc, msa->rf[apos]))) {
-          rflen++;
-       }
 
+   /* allocate memory */
+   ESL_ALLOC(out_tr, sizeof(P7_TRACE *));
+   ESL_ALLOC(out_sq, sizeof(ESL_SQ *));
+   ESL_ALLOC(pr_sorted, r*sizeof(double));
+
+   /* create the output sequence */
+   //out_tr[0] = p7_trace_Create();
+   out_sq[0] = esl_sq_CreateDigital(gm->abc);
+   esl_sq_Copy(sq, out_sq[0]);
+
+   /* include all consensus columns in output MSA(s) */
+   msaopts |= p7_ALL_CONSENSUS_COLS;
+
+
+   /* figure out what the IS score was before this batch */
+   /* copy pr_unsorted to pr_unsorted */
+   esl_vec_DCopy(pr_unsorted, r-R_batch, pr_sorted);
+   /* sort pr_sorted for more accurate log summing */
+   esl_vec_DSortIncreasing(pr_sorted, r-R_batch);
+   ls = esl_vec_DLog2Sum(pr_sorted,r-R_batch);
+   /* calcuate full log odds-score */
+   ldprev = ((fsc - logf(r-R_batch) ) / eslCONST_LOG2) + ls;
+
+   /* now loop through paths and find jump(s) */
+   for (s = r-R_batch+1; s<r; s++){
+      t = s-r+R_batch-1; /* index w/in batch: t = 0,...,R_batch-1 */
+
+      /* calculate log-odds score at this iteration */
+      esl_vec_DCopy(pr_unsorted,s+1, pr_sorted);
+      esl_vec_DSortIncreasing(pr_sorted, s+1);
+      ls = esl_vec_DLog2Sum(pr_sorted, s+1);
+      ld = ((fsc - logf(s+1) ) / eslCONST_LOG2) + ls;
+
+      /* calculate HMM score of this seq and sampled path */
+      p7_trace_Score(tr[t], sq->dsq, gm, &hmmsc_ld);
+      hmmsc_ld /= eslCONST_LOG2;
+
+      //fprintf(stdout, "%s,%d,%.2f,%.2f,%.2f,%.2f,%.2f, %.2f\n", sq->name, s, pr_unsorted[s], hmmsc_ld,  pr_unsorted[s] + hmmsc_ld, pr_unsorted[s], ldprev, ld);
+
+
+      /* put path that causes jump in an output MSA file */
+      if (abs(ld-ldprev) > 0.25) {
+         //p7_trace_Dump(stdout, tr[t], gm, sq->dsq);
+
+         /* clone this trace into 1x1 trace "array", create MSA */
+         out_tr[0] = cmis_trace_Clone(tr[t]);
+         p7_tracealign_Seqs(out_sq, out_tr, 1, hmm->M, msaopts, hmm, &out_msa);
+
+         /* map cm's SS_cons onto MSA */
+         if (map_ss_cons(cm, out_msa, errbuf) != eslOK) ESL_FAIL(eslFAIL, errbuf, "Issue running map_ss_cons from find_jumps\n");
+
+         /* create unique output MSA path */
+         sprintf(out_msa_path,"%s_path_%d.sto", sq->name, s);
+
+         /* write the msa file */
+         afp = fopen(out_msa_path, "w");
+         esl_msafile_Write(afp, out_msa, outfmt);
+         fclose(afp);
+
+         /* print info about jumping path */
+         fprintf(stdout, "\nJumping IS score for sequence %s, path %d\n", sq->name, s);
+         fprintf(stdout, "IS score at previous iteration:                  %.2f\n", ldprev);
+         fprintf(stdout, "IS score at this iteration:                      %.2f\n", ld);
+         fprintf(stdout, "CM log-odds score for this seq, path:            %.2f\n",  pr_unsorted[s] + hmmsc_ld);
+         fprintf(stdout, "HMM log-odds score for this seq, path:           %.2f\n",  hmmsc_ld);
+         fprintf(stdout, "This path's contribution to IS sum (in bits):    %.2f\n",  pr_unsorted[s]);
+         fprintf(stdout, "Log posterior probability of path under HMM:     %.2f\n", hmmsc_ld - (fsc / eslCONST_LOG2));
+
+
+         //fprintf(stdout, "hmmsc_ld: %.2f, cmsc_ld: %.2f, pr[r]: %.2f\n", hmmsc_ld, pr_unsorted[s] + hmmsc_ld, pr_unsorted[s]);
+
+         /* reuse trace in case more jumping paths in this batch */
+         p7_trace_Reuse(out_tr[0]);
+
+      }
+
+
+      ldprev = ld;
    }
 
-   /* loop 2: create mask */
-   for (apos = 0; apos < msa->alen; apos++) {
-      if ((! esl_abc_CIsGap(msa->abc, msa->rf[apos])) &&
-         (! esl_abc_CIsMissing(msa->abc, msa->rf[apos])) &&
-         (! esl_abc_CIsNonresidue(msa->abc, msa->rf[apos]))) {
-         nrf++;
+   /* clean up and return */
+   fprintf(stdout, "ABOUT TO CLEANUP!!!!1!\n");
+   p7_trace_Destroy(out_tr[0]);
+   esl_sq_Destroy(out_sq[0]);
+   esl_msa_Destroy(out_msa);
+   free(out_tr);
+   free(out_sq);
+   free(pr_sorted);
+   fprintf(stdout, "Finished cleaning up!\n");
+
+   return eslOK;
+
+   ERROR:
+      return status;
+
+}
+
+/* Function: map_ss_cons()
+ *
+ * Purpose:  Copy the secondary structure annotation from <cm>
+ *           onto the ss_cons line of <msa>. Useful because
+ *           msa often has insert columns => mapping non-trivial.
+ *
+ *
+ *
+ * args:    cm            - covariance model
+ *          msa           - multiple sequence alignment
+ *          errbuf        - optRETURN: space for an informative
+ *                          error message if something fails.
+ *                          Feature more for the future tbh.
+ *
+ * Returns: eslOK on success
+ *
+ * */
+
+int map_ss_cons(CM_t *cm, ESL_MSA *msa, char *errbuf) {
+
+   int cpos   = 0;    /* cm node index    */
+   int k;             /* msa column index */
+   int status;        /* esl return code  */
+
+   ESL_ALLOC(msa->ss_cons, (sizeof(char) * (msa->alen+1)));
+
+   /* loop over columns and add ss_cons annotation */
+   for (k = 0; k <= msa->alen; k++) {
+      /* if the RF line is an 'x' here, we have a match column! */
+      /* 120 = 'x' in ASCII. If you don't know, now you know.   */
+      if (msa->rf[k] == 120) {
+         msa->ss_cons[k] = cm->cmcons->cstr[cpos];
+         cpos++;
       }
       else {
-         if (nrf == 0 || nrf == rflen) useme[apos] = FALSE;
+         msa->ss_cons[k] = '.';
       }
-
    }
 
-   /* apply mask */
-   if ((status = esl_msa_ColumnSubset(msa, errbuf, useme)) != eslOK) esl_fatal(errbuf);
+   /* terminate ss_cons w/ null byte */
+   msa->ss_cons[msa->alen] = '\0';
 
-   free(useme);
    return eslOK;
+
    ERROR:
       return status;
 
