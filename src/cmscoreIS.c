@@ -566,7 +566,7 @@ int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng,
             fprintf(scoreprogfp, "%s,%d,%.2f,%.2f\n", sq[i]->name, r, insc, ld);
 
             /* look for paths that make IS scores jump */
-            if ( (r > 1e3) && (ld-ldprev > 0.25))  find_jumps(pr_unsorted, r, R_batch, sq[i], tr_dummy, hmm, gm, fsc, cm, errbuf);
+            if ( (r > 1e6) && (ld-ldprev > 0.25))  find_jumps(pr_unsorted, r, R_batch, sq[i], tr_dummy, hmm, gm, fsc, cm, errbuf);
 
             ldprev = ld;
          }
