@@ -14,7 +14,7 @@ SLIBS    = ${INFERNALDIR}/libinfernal.a ${HMMERDIR}/libhmmer.a ${ESLDIR}/libease
 CC = gcc
 CFLAGS = -Wall -g
 
-all: cmis_scoreset cmis_trace cmscoreIS
+all: cmis_scoreset cmis_trace cmscoreIS cmemit_posterior hmmscore_path
 
 cmis_scoreset: cmis_scoreset.c
 	${CC} ${CFLAGS} -c -o cmis_scoreset.o ${IFLAGS} cmis_scoreset.c
@@ -25,7 +25,12 @@ cmis_trace: cmis_trace.c
 cmscoreIS: cmscoreIS.c
 	${CC} ${CFLAGS} -o cmscoreIS ${IFLAGS} ${LFLAGS} ${LIBS} cmscoreIS.c cmis_scoreset.o cmis_trace.o ${SLIBS}
 
+cmemit_posterior: cmemit_posterior.c
+	${CC} ${CFLAGS} -o cmemit_posterior ${IFLAGS} ${LFLAGS} ${LIBS} cmemit_posterior.c ${SLIBS}
+
+hmmscore_path: hmmscore_path.c
+	${CC} ${CFLAGS} -o hmmscore_path ${IFLAGS} ${LFLAGS} ${LIBS} hmmscore_path.c ${SLIBS}
 clean:
-	rm -f cmscoreIS cmis_scoreset.o cmis_trace.o
+	rm -f cmscoreIS cmis_scoreset.o cmis_trace.o cmemit_posterior hmmscore_path
 
 .PHONY: all clean
