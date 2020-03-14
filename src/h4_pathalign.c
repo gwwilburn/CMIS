@@ -8,7 +8,10 @@
 #include "h4_profile.h"
 
 /* declaration of internal functions */
-static int     map_new_msa(H4_PATH **pi, int nseq, int M, int allcons, int **ret_inscount, int **ret_matuse, int **ret_matmap, int *ret_alen);
+static int map_new_msa(H4_PATH **pi, int nseq, int M, int allcons, int **ret_inscount, int **ret_matuse, int **ret_matmap, int *ret_alen);
+static int make_digital_msa(ESL_SQ **sq, const ESL_MSA *premsa, H4_PATH **pi, int nseq, const int *matuse, const int *matmap, int M, int alen, int allcons, ESL_MSA **ret_msa);
+static int annotate_rf(ESL_MSA *msa, int M, const int *matuse, const int *matmap);
+static int rejustify_insertions_digital(ESL_MSA *msa, const int *inserts, const int *matmap, const int *matuse, int M);
 
 int
 h4_pathalign_Seqs(ESL_SQ **sq, H4_PATH **pi, int nseq, int M, int allcons, H4_PROFILE *hmm, ESL_MSA **ret_msa)
@@ -22,13 +25,28 @@ h4_pathalign_Seqs(ESL_SQ **sq, H4_PATH **pi, int nseq, int M, int allcons, H4_PR
    int                 alen;                    /* width of alignment, aka # of columns                                */
    int                 status;                  /* Easel return code                                                   */
 
-   if ((status = map_new_msa(pi, nseq, M, allcons, &inscount, &matuse, &matmap, &alen)) != eslOK) return status;
+   /* map match positions to MSA columns */
+   if ((status = map_new_msa(pi, nseq, M, allcons, &inscount, &matuse, &matmap, &alen))        != eslOK) return status;
+   /* make a new ESL_MSA */
+   if ((status = make_digital_msa(sq, NULL, pi, nseq, matuse, matmap, M, alen, allcons, &msa)) != eslOK) goto ERROR;
+   /* add RF annotation */
+   if ((status = annotate_rf(msa, M, matuse, matmap))                                          != eslOK) goto ERROR;
+   /* rejustify insertions */
+   if ((status = rejustify_insertions_digital(msa, inscount, matmap, matuse, M))               != eslOK) goto ERROR;
 
    /* clean up and return */
    free(inscount);
    free(matmap);
    free(matuse);
    return eslOK;
+
+   ERROR:
+      if (msa      != NULL) esl_msa_Destroy(msa);
+      if (inscount != NULL) free(inscount);
+      if (matmap   != NULL) free(matmap);
+      if (matuse   != NULL) free(matuse);
+      *ret_msa = NULL;
+      return status;
 }
 
 static int
@@ -41,6 +59,7 @@ map_new_msa(H4_PATH **pi, int nseq, int M, int allcons, int **ret_inscount,
    int *matmap   = NULL;  /* matmap[k=1..M]: if matuse[k] TRUE, what column 1..alen does node k map to */
    int  idx;              /* counter over sequences                                                    */
    int  z;                /* index into path positions                                                 */
+   int  y;                /* index over path position run lengths                                      */
    int  alen;             /* length of alignment                                                       */
    int  k;                /* counter over nodes 1..M                                                   */
    int  status;
@@ -54,39 +73,66 @@ map_new_msa(H4_PATH **pi, int nseq, int M, int allcons, int **ret_inscount,
    /* initialize insert count array */
    esl_vec_ISet(inscount, M+1, 0);
 
-   /* if we are commanded to keep all match coumns, set this array to true */
+   /* if we are commanded to keep all match coumns, set this array to true  (except node 0) */
    if    (allcons) esl_vec_ISet(matuse+1, M, TRUE);
    else  esl_vec_ISet(matuse+1, M, FALSE);
 
-   /* Collect inscount[], matuse[] in a fairly general way */
+   /* Collect inscount[], matuse[] */
    for (idx = 0; idx < nseq; idx++) {
+      /* reset single-trace insert counts */
+      esl_vec_ISet(insnum, M+1, 0);
+
       h4_path_Dump(stdout, pi[idx]);
+
       for (z = 0; z < pi[idx]->Z; z++) {            // z=0 is always an N.
-         fprintf(stdout, "z: %d\n", z);
+         //fprintf(stdout, "z: %d\n", z);
 
          switch(pi[idx]->st[z]) {
 
             /* N-terminus (5') flanking insert states */
             case h4P_N:
-               fprintf(stdout, "number of residues in N state: %d\n", pi[idx]->rle[z]-1);
+
+               //fprintf(stdout, "number of residues in N state: %d\n", pi[idx]->rle[z]-1);
+
+               /* record how many residues this path has in its N state */
+               /* N state emits on loop transition */
                insnum[0] = pi[idx]->rle[z]-1;
+               k = 1;
                break;
 
             /* global match states */
             case h4P_MG:
+               for (y = 0; y < pi[idx]->rle[z]; y++){
+                  //fprintf(stdout, "match state in node %d\n", k);
+
+                  /* note that this match state is occupied */
+                  matuse[k] = TRUE;
+                  /* increment the node counter */
+                  k++;
+               }
                break;
 
             /* global delete states */
             case h4P_DG:
+               /* increase the node counter by the number of delete states*/
+               k += pi[idx]->rle[z];
                break;
 
             /*global insert states */
             case h4P_IG:
+               //fprintf(stdout, "number of residues in insert state %d: %d\n", k, pi[idx]->rle[z]);
+
+               /* record how many residues this path has in insert state k */
+               insnum[k] = pi[idx]->rle[z];
                break;
 
             /* C-terminus (3') flanking insert states */
             case h4P_C:
-               fprintf(stdout, "number of residues in C state: %d\n", pi[idx]->rle[z]-1);
+           /* global delete states */
+               //fprintf(stdout, "number of residues in C state: %d\n", pi[idx]->rle[z]-1);
+
+               /* record how many residues this path has in its N state */
+               /* C state emits on loop transition */
                insnum[M] = pi[idx]->rle[z]-1;
 
             /* silent uniglogal states that don't show up in the MSA */
@@ -110,11 +156,22 @@ map_new_msa(H4_PATH **pi, int nseq, int M, int allcons, int **ret_inscount,
          }
 
       }
+      /* update inscount if this path  widens the alignment */
       for (k = 0; k <= M; k++) {
          inscount[k] = ESL_MAX(inscount[k], insnum[k]);
       }
    }
 
+   /* Use inscount, matuse to set the matmap[] */
+   alen      = inscount[0];
+   for (k = 0; k <= M; k++) {
+      fprintf(stdout, "node %d\n", k);
+      fprintf(stdout, "\tmatuse: %d\n", matuse[k]);
+      fprintf(stdout, "\tinscount: %d\n", inscount[k] );
+
+      if (matuse[k]) { matmap[k] = alen+1; alen += 1+inscount[k]; }
+      else           { matmap[k] = alen;   alen +=   inscount[k]; }
+   }
 
 
    /* clean up and return */
@@ -135,4 +192,26 @@ map_new_msa(H4_PATH **pi, int nseq, int M, int allcons, int **ret_inscount,
       *ret_matmap   = NULL;
       *ret_alen     = 0;
       return status;
+}
+
+static int
+make_digital_msa(ESL_SQ **sq, const ESL_MSA *premsa, H4_PATH **pi, int nseq, const int *matuse, const int *matmap, int M, int alen, int allcons, ESL_MSA **ret_msa) {
+
+   return eslOK;
+
+
+}
+
+static int
+annotate_rf(ESL_MSA *msa, int M, const int *matuse, const int *matmap)
+{
+
+   return eslOK;
+}
+
+static int
+rejustify_insertions_digital(ESL_MSA *msa, const int *inserts, const int *matmap, const int *matuse, int M)
+{
+
+   return eslOK;
 }
