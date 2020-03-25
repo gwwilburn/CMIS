@@ -27,12 +27,13 @@
 /* CMIS includes */
 #include "cmis_scoreset.h"
 #include "cmis_trace.h"
+#include "h4_path_cmis.h"
 #include "h4_pathalign.h"
 
 /* declaration of internal functions */
 int Calculate_IS_scores(CM_t *cm, H4_PROFILE *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng, CMIS_SCORESET *cmis_ss, ESL_MSA **msa, char *scoreprogfile, char *aliprogfile, int start, int end, int totseq, int user_R, int A, int verbose);
 int map_ss_cons(CM_t *cm, ESL_MSA *msa, char *errbuf);
-//int find_jumps(double *pr, int r, int R_batch, ESL_SQ *name, P7_TRACE **tr, P7_HMM *hmm, P7_PROFILE *gm, float fsc, CM_t *cm, char *errbuf);
+int find_jumps(double *pr_unsorted, int r, int R_batch, ESL_SQ *sq, H4_PATH **pi, H4_PROFILE *hmm, H4_MODE *mo, float fsc, CM_t *cm, Parsetree_t **pstr, char *errbuf);
 
 static ESL_OPTIONS options[] = {
         /* name              type        default    env range togs  reqs  incomp            help                                                     docgroup */
@@ -257,18 +258,18 @@ int main (int argc, char *argv[]) {
    }
 
    /* write score file */
-   //if ((cmis_ss_fp = fopen(scorefile, "w")) == NULL) esl_fatal("Failed to open output CMIS scoreset file %s for writing", scorefile);
-   //if (cmis_scoreset_Write(cmis_ss_fp, cmis_ss) != eslOK) esl_fatal("Failed to write scores to CMIS scoreset file %s",    scorefile);
-   //fclose(cmis_ss_fp);
+   if ((cmis_ss_fp = fopen(scorefile, "w")) == NULL) esl_fatal("Failed to open output CMIS scoreset file %s for writing", scorefile);
+   if (cmis_scoreset_Write(cmis_ss_fp, cmis_ss) != eslOK) esl_fatal("Failed to write scores to CMIS scoreset file %s",    scorefile);
+   fclose(cmis_ss_fp);
 
    if(cm->flags & CMH_LOCAL_BEGIN) fprintf(stdout, "Local begins on!\n");
    if(cm->flags & CMH_LOCAL_END) fprintf(stdout, "Local ends on!\n");
 
    /* if output msa requested, write it to output file */
    if (A) {
-   //   esl_msafile_Write(afp, msa, outfmt);
+      esl_msafile_Write(afp, msa, outfmt);
       fclose(afp);
-   //   esl_msa_Destroy(msa);
+      esl_msa_Destroy(msa);
    }
 
    /* clean up and return */
@@ -308,14 +309,13 @@ int Calculate_IS_scores(CM_t *cm, H4_PROFILE *hmm, ESL_SQ **sq, ESL_RANDOMNESS *
    int             b;                                       /* batch index                                   */
    int             r,s;                                     /* alignment sample indices                      */
    int             R           = 1000;                      /* number of sampled alignments per sequence     */
-   int             R_batch     = 10;                      /* sampled alignment batch size                  */
-   //int             R_batch     = 1000;                      /* sampled alignment batch size                  */
+   //int             R_batch     = 10;                        /* sampled alignment batch size                  */
+   int             R_batch     = 10000;                    /* sampled alignment batch size                  */
    int             N_batch;                                 /* total number of batches                       */
    int             nBetter;                                 /* number of better alignments we've found       */
    int             allcons     = 1;                         /* bool for keeping all consensus columns in MSA */
-   float           fsc;                                     /* forward partial log-odds score, in nats       */
-   float           ntsc;                                    /* hmmer null transition score, in nats          */
-   float           hmmsc_ld;                                /* hmm log odds S(x,pi), in nats                 */
+   float           fsc;                                     /* forward partial log-odds score, in bits       */
+   float           hmmsc_ld;                                /* hmm log odds S(x,pi), in bits                 */
    float           cmsc_ld;                                 /* cm log odds S(x, pi), in bits                 */
    float           cmsc_max;                                /* best cm log odds S(x, pi) for all paths       */
    float           insc;                                    /* log-odds score for inside algorithm           */
@@ -336,6 +336,12 @@ int Calculate_IS_scores(CM_t *cm, H4_PROFILE *hmm, ESL_SQ **sq, ESL_RANDOMNESS *
    if (aliprogfile) {
       if ((aliprogfp = fopen(aliprogfile, "w")) == NULL) p7_Fail("Failed to open file %s for writing\n", aliprogfile);
       fprintf(aliprogfp, "id,iter,cmis_logodds\n");
+   }
+
+   if (A) {
+      /* allocate memory for paths for output MSA */
+      ESL_ALLOC(out_pi, sizeof(H4_PATH *) * totseq);
+      ESL_ALLOC(out_sq, sizeof(ESL_SQ *) * (totseq));
    }
 
    /* set number of samples */
@@ -360,12 +366,6 @@ int Calculate_IS_scores(CM_t *cm, H4_PROFILE *hmm, ESL_SQ **sq, ESL_RANDOMNESS *
    esl_vec_DSet(pr_unsorted, R, 0.0);
 
 
-   if (A) {
-      /* allocate memory for traces  and initialize */
-      ESL_ALLOC(out_pi, sizeof(H4_PATH *) * totseq);
-      ESL_ALLOC(out_sq, sizeof(ESL_SQ *) * (totseq));
-   }
-
    /* set HMM mode to uniglocal  */
    h4_mode_SetUniglocal(mo);
 
@@ -378,6 +378,7 @@ int Calculate_IS_scores(CM_t *cm, H4_PROFILE *hmm, ESL_SQ **sq, ESL_RANDOMNESS *
 
       nBetter = 0;
       ldprev = 0.0;
+
 
       /* index for score set: must start at 0 */
       j=i-start;
@@ -408,11 +409,11 @@ int Calculate_IS_scores(CM_t *cm, H4_PROFILE *hmm, ESL_SQ **sq, ESL_RANDOMNESS *
       esl_vec_DSet(pr, R, 0.0);
       esl_vec_DSet(pr_unsorted, R, 0.0);
 
-       /* middle loop over batches of sampled alignments */
-       for (b = 0; b < N_batch; b++) {
+      /* middle loop over batches of sampled alignments */
+      for (b = 0; b < N_batch; b++) {
          ESL_MSA        *msa_dummy;                            /* MSA of different aligmnetss of seq i  */
-         //Parsetree_t    *mtr       = NULL;                     /* the guide tree                        */
-         //Parsetree_t   **pstr      = NULL;                     /* array of parse trees created from MSA */
+         Parsetree_t    *mtr       = NULL;                     /* the guide tree                        */
+         Parsetree_t   **pstr      = NULL;                     /* array of parse trees created from MSA */
 
          /* inner loop 1: sample alignments from HMM */
          for (s = 0;  s < R_batch; s++) {
@@ -433,6 +434,8 @@ int Calculate_IS_scores(CM_t *cm, H4_PROFILE *hmm, ESL_SQ **sq, ESL_RANDOMNESS *
 
             h4_path_Score(pi_dummy[s], sq[i]->dsq, hmm, mo, &hmmsc_ld);
 
+            pr[r] -= hmmsc_ld;
+
          }
 
          /* in between inner loops: convert h4 paths to MSA to parse trees */
@@ -440,26 +443,135 @@ int Calculate_IS_scores(CM_t *cm, H4_PROFILE *hmm, ESL_SQ **sq, ESL_RANDOMNESS *
          /* step 1: convert paths to an MSA */
 
          status = h4_pathalign_Seqs(sq_dummy, pi_dummy, R_batch, hmm->M, allcons, hmm, &msa_dummy);
-         fprintf(stdout, "i: %d, h4_pathalign_Seqs() return code: %d\n", i, status);
+         //fprintf(stdout, "i: %d, h4_pathalign_Seqs() return code: %d\n", i, status);
+
+
+         map_ss_cons(cm, msa_dummy, errbuf);
+         //int outfmt = eslMSAFILE_STOCKHOLM;
+         //FILE *afp = NULL;
+         //afp = fopen("foo.sto", "w");
+         //esl_msafile_Write(afp, msa_dummy, outfmt);
+         //fclose(afp);
+
+         /* create guide tree */
+         status = HandModelmaker(msa_dummy, errbuf,
+                                 TRUE,  /* use_rf */
+                                 FALSE, /* use_el, no */
+                                 FALSE, /* use_wts, irrelevant */
+                                 0.5,   /* gapthresh, irrelevant */
+                                 NULL,  /* returned CM, irrelevant */
+                                 &mtr); /* guide tree */
+
+         if (status != eslOK)  ESL_XFAIL(status, errbuf, "Issue running HandModelmaker()\n");
+
+         /* create parse tree alignment from MSA */
+         Alignment2Parsetrees(msa_dummy, cm, mtr, errbuf, NULL, &pstr);
+
+         /* inner loop 2: score traces with CM */
+         for (s = 0; s < R_batch; s++) {
+
+            /* calculate overall sample number */
+            r = b*R_batch + s;
+
+            /* if we've sampled enough, skip scoring and go to clean up */
+            if (r >= R) goto cleanup;
+
+
+            /* score this sequence and alignment */
+            ParsetreeScore(cm,
+                           NULL,
+                           errbuf,
+                           pstr[s],
+                           sq[i]->dsq,
+                           0,
+                           &cmsc_ld,
+                           NULL,
+                           NULL,
+                           NULL,
+                           NULL);
+
+             pr[r] += cmsc_ld;
+
+            /* for output alignment , see if we've got a better path */
+            if (A && cmsc_ld > cmsc_max) {
+               cmsc_max = cmsc_ld;
+
+               /* if we're tracking alignment progress, print S(x,pi) of new best alignment */
+               if (aliprogfile) fprintf(aliprogfp, "%s,%d,%.2f\n", sq[i]->name, r, cmsc_max);
+
+               /* if we've already created out_pi[j], free it before recreating it */
+               if (nBetter > 0) h4_path_Destroy(out_pi[j]);
+               out_pi[j] = h4_path_Clone(pi_dummy[s]);
+               nBetter++;
+            }
+
+
+         }
+
+         /* if requested, track intermediate scoring progress for this batch */
+         if (scoreprogfile) {
+            esl_vec_DCopy(pr,r+1, pr_unsorted);
+            esl_vec_DSortIncreasing(pr, r+1);
+            float ls = esl_vec_DLog2Sum(pr, r+1);
+            float ld = fsc - log2f(r+1) + ls;
+
+            //fprintf(stdout, "test!\n");
+            fprintf(stdout, "r: %d, intermediate score: %2f\n", r, ld);
+
+            fprintf(scoreprogfp, "%s,%d,%.2f,%.2f\n", sq[i]->name, r, insc, ld);
+
+            /* look for paths that make IS scores jump */
+            if ( (r > 1e6) && (ld-ldprev > 0.25))  find_jumps(pr_unsorted, r, R_batch, sq[i], pi_dummy, hmm, mo, fsc, cm, pstr, errbuf);
+
+             ldprev = ld;
+         }
+
+
 
          /* clean up for next iteration of middle loop */
-         //esl_msa_Destroy(msa_dummy);
          cleanup: for (s = 0; s < R_batch; s++) {
             esl_sq_Reuse(sq_dummy[s]);
             h4_path_Reuse(pi_dummy[s]);
+            FreeParsetree(pstr[s]);
          }
 
-         //FreeParsetree(mtr);
-         //free(pstr);
+         esl_msa_Destroy(msa_dummy);
+         FreeParsetree(mtr);
+         free(pstr);
+      }
 
-       }
+      /* calculate IS approximation for this sequence */
+      /* sort to increase accuracy if LogSum */
+      esl_vec_DSortIncreasing(pr, R);
 
+      /* run log sum */
+      ls = esl_vec_DLog2Sum(pr, R);
+
+      /* incorporate alignment-independent bits into score */
+      ld = fsc - log2f(R) + ls;
+
+      /* add scoring info to scoreset object */
+      cmis_ss->sqname[j]   = sq[i]->name;
+      cmis_ss->R[j]        = R;
+      cmis_ss->fsc[j]      = fsc;
+      cmis_ss->ntsc[j]     = mo->nullsc;
+      cmis_ss->insc[j]     = insc;
+      cmis_ss->scansc[j]   = 0.0;
+      cmis_ss->seq_from[j] = -1;
+      cmis_ss->seq_to[j]   = -2;
+      cmis_ss->cmis_ld[j]  = ld;
+
+   }
+
+   /* if output msa requested, create it from traces */
+   if (A) {
+      h4_pathalign_Seqs(out_sq, out_pi, totseq, hmm->M, TRUE, hmm, msa);
    }
 
    /* clean up and return */
    if (A) {
       for (j=0; j<totseq; j++) {
-         //h4_path_Destroy(out_pi[j]);
+         h4_path_Destroy(out_pi[j]);
          esl_sq_Destroy(out_sq[j]);
       }
       free(out_pi);
@@ -482,6 +594,152 @@ int Calculate_IS_scores(CM_t *cm, H4_PROFILE *hmm, ESL_SQ **sq, ESL_RANDOMNESS *
 
    ERROR:
       return status;
+}
+
+
+/* Function: find_jumps()
+ *
+ * Purpose:  Poor importance sampling often shows sudden "jumps" in bitscore
+ *           due to a single sample. Given a set of <R_batch> sampled paths
+ *           of sequence <sq> through model <hmm>, find the path(s) that
+ *           cause(s) the jump in score. Print S_HMM(x,pi) and S_CM(x,pi) to
+ *           stdout. Also, output the alignment to an output msafile in the
+ *           current working directly.
+ *
+ *           In case this isn't clear, this function is mostly for debugging.
+ *           It's only called with the --scoreprog option set.
+ *
+ *
+ *
+ * args:    pr_unsorted   - vector containing ratios of bitscores. At least
+ *                          the last <R_batch> elements are in the order in
+ *                          which they were sampled.
+ *          r             - sample index of the **last** path in the batch.
+ *          sq            - sequence we are scoring
+ *          pi            - <R_batch>-sized path array with batch of sampled
+ *                          paths.
+ *          hmm           - HMM used for generating paths.
+ *          fsc           - forward score of <sq> under HMM, in bits.
+ *          cm            - cm, only used here for mapping ss_cons to output
+ *                          MSA('s)
+ *          errbuf        - Error information. Feature more for the future tbh.
+ *
+ * Returns: eslOK on success, eslERROR if call to map_ss_cons() has issues.
+ *
+ * */
+
+int find_jumps(double *pr_unsorted, int r, int R_batch, ESL_SQ *sq, H4_PATH **pi, H4_PROFILE *hmm, H4_MODE *mo, float fsc, CM_t *cm, Parsetree_t **pstr, char *errbuf){
+   double    *pr_sorted;                                  /* vector of log-odds ratios, sorted from largest to smallest */
+   float      ls;                                         /* log_sum of pr_sorted                                       */
+   float      ld;                                         /* IS log odds score                                          */
+   float      ldprev;                                     /* Previous iteration's IS log-odds score                     */
+   float      hmmsc_ld;                                   /* log-odds score of a sequence and path given <hmm>          */
+   int        s,t;                                        /* IS iteration indices                                       */
+   H4_PATH  **out_pi             = NULL;                  /* 1-element path array for outputting path to an MSA         */
+   ESL_SQ   **out_sq;                                     /* 1-element seq array for outputting path to an MSA          */
+   ESL_MSA  *out_msa             = NULL;                  /* output MSA object                                          */
+   FILE      *afp                = NULL;                  /* output alignment file                                      */
+   char       out_msa_path[100];                          /* output MSA filepath                                        */
+   int        outfmt             = eslMSAFILE_STOCKHOLM;  /* output MSA format. I am unwavering on this matter.         */
+   int        njump              = 0;                     /* keep track of number of jumping paths in this batch        */
+   int        status;                                     /* esl return code                                            */
+
+   fprintf(stdout, "in find jumps. r: %d\n", r);
+   /* allocate memory */
+   ESL_ALLOC(out_pi, sizeof(H4_PATH *));
+   ESL_ALLOC(out_sq, sizeof(ESL_SQ *));
+   ESL_ALLOC(pr_sorted, r*sizeof(double));
+
+   /* create the output sequence */
+   out_sq[0] = esl_sq_CreateDigital(hmm->abc);
+   esl_sq_Copy(sq, out_sq[0]);
+
+   /* figure out what the IS score was before this batch */
+   s = r-R_batch;
+   /* copy pr_unsorted to pr_unsorted */
+   esl_vec_DCopy(pr_unsorted, r-R_batch+1, pr_sorted);
+   /* sort pr_sorted for more accurate log summing */
+   esl_vec_DSortIncreasing(pr_sorted, s+1);
+   ls = esl_vec_DLog2Sum(pr_sorted,s+1);
+   /* calcuate full log odds-score */
+   ldprev = fsc - log2f(r-R_batch+1) + ls;
+
+   /* now loop through paths and find jump(s) */
+   for (s = r-R_batch+1; s<r; s++){
+
+      /* index w/in batch: t = 0,...,R_batch-1 */
+      t = s-r+R_batch-1;
+
+      fprintf(stdout, "\tt: %d\n", t);
+
+      /* calculate log-odds score at this iteration */
+      esl_vec_DCopy(pr_unsorted,s+1, pr_sorted);
+      esl_vec_DSortIncreasing(pr_sorted, s+1);
+      ls = esl_vec_DLog2Sum(pr_sorted, s+1);
+      ld = fsc - log2f(s+1) + ls;
+
+      /* calculate HMM score of this seq and sampled path */
+      h4_path_Score(pi[t], sq->dsq, hmm, mo, &hmmsc_ld);
+
+      /* put path that causes jump in an output MSA file */
+      if (abs(ld-ldprev) > 0.25) {
+         if (njump > 0) {
+            h4_path_Destroy(out_pi[0]);
+            esl_msa_Destroy(out_msa);
+         }
+
+         out_pi[0] = h4_path_Clone(pi[t]);
+         h4_pathalign_Seqs(out_sq, out_pi, 1, hmm->M, TRUE, hmm, &out_msa);
+
+         /* map cm's SS_cons onto MSA */
+         if (map_ss_cons(cm, out_msa, errbuf) != eslOK) ESL_FAIL(eslFAIL, errbuf, "Issue running map_ss_cons from find_jumps\n");
+
+         /* create unique output MSA path */
+         sprintf(out_msa_path,"%s_path_%d.sto", sq->name, s);
+
+         /* write the msa file */
+         afp = fopen(out_msa_path, "w");
+         esl_msafile_Write(afp, out_msa, outfmt);
+         fclose(afp);
+
+         /* print info about jumping path */
+         fprintf(stdout, "\nJumping IS score for sequence %s, path %d\n", sq->name, s);
+         fprintf(stdout, "IS score at previous iteration:                  %.2f\n", ldprev);
+         fprintf(stdout, "IS score at this iteration:                      %.2f\n", ld);
+         fprintf(stdout, "CM log-odds score for this seq, path:            %.2f\n",  pr_unsorted[s] + hmmsc_ld);
+         fprintf(stdout, "HMM log-odds score for this seq, path:           %.2f\n",  hmmsc_ld);
+         fprintf(stdout, "This path's contribution to IS sum (in bits):    %.2f\n",  pr_unsorted[s]);
+         fprintf(stdout, "Log posterior probability of path under HMM:     %.2f\n",  hmmsc_ld - fsc);
+
+         ParsetreeDump(stdout, pstr[t], cm, sq->dsq);
+         h4_path_DumpAnnotated(stdout, out_pi[0], hmm, mo, sq->dsq);
+         /* note that we've seen a jump */
+         njump++;
+      }
+
+      ldprev = ld;
+   }
+
+
+
+   /* clean up and return */
+   if (njump > 0) {
+      h4_path_Destroy(out_pi[0]);
+      esl_msa_Destroy(out_msa);
+   }
+
+   esl_sq_Destroy(out_sq[0]);
+   free(out_pi);
+   free(out_sq);
+   free(pr_sorted);
+
+   ERROR:
+      return status;
+
+
+
+
+   return eslOK;
 }
 
 /* Function: map_ss_cons()
