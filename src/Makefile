@@ -15,7 +15,7 @@ SLIBS    = ${INFERNALDIR}/libinfernal.a ${HMMERDIR}/libhmmer.a ${H4DIR}/libhmmer
 CC = gcc
 CFLAGS = -Wall -g
 
-all: cmis_scoreset cmis_trace h4_pathalign h4_path_cmis cmscoreIS cmscoreISh4 cmemit_posterior h4score_path hmmscore_path
+all: cmis_scoreset cmis_trace h4_pathalign h4_path_cmis cmscoreIS cmscoreISh4 cmscoreISh4_decoy cmscore_path cmemit_posterior h4score_path hmmscore_path
 
 cmis_scoreset: cmis_scoreset.c
 	${CC} ${CFLAGS} -c -o cmis_scoreset.o ${IFLAGS} cmis_scoreset.c
@@ -35,6 +35,12 @@ cmscoreIS: cmscoreIS.c
 cmscoreISh4: cmscoreISh4.c
 	${CC} ${CFLAGS} -o cmscoreISh4 ${IFLAGS} ${LFLAGS} ${LIBS} cmscoreISh4.c cmis_scoreset.o cmis_trace.o h4_path_cmis.o h4_pathalign.o ${SLIBS}
 
+#cmscoreISh4_decoy: cmscoreISh4_decoy.c
+#	${CC} ${CFLAGS} -o cmscoreISh4_decoy ${IFLAGS} ${LFLAGS} ${LIBS} cmscoreISh4_decoy.c cmis_scoreset.o cmis_trace.o h4_path_cmis.o h4_pathalign.o ${SLIBS}
+
+cmscore_path: cmscore_path.c
+	${CC} ${CFLAGS} -o cmscore_path ${IFLAGS} ${LFLAGS} ${LIBS} cmscore_path.c ${SLIBS}
+
 cmemit_posterior: cmemit_posterior.c
 	${CC} ${CFLAGS} -o cmemit_posterior ${IFLAGS} ${LFLAGS} ${LIBS} cmemit_posterior.c h4_path_cmis.o ${SLIBS}
 
@@ -44,6 +50,6 @@ h4score_path: h4score_path.c
 hmmscore_path: hmmscore_path.c
 	${CC} ${CFLAGS} -o hmmscore_path ${IFLAGS} ${LFLAGS} ${LIBS} hmmscore_path.c ${SLIBS}
 clean:
-	rm -f cmscoreIS cmscoreISh4 cmis_scoreset.o cmis_trace.o h4_pathalign.o h4_path_cmis.o cmemit_posterior h4score_path hmmscore_path
+	rm -f cmscoreIS cmscoreISh4 cmscoreISh4_decoy cmis_scoreset.o cmis_trace.o h4_pathalign.o h4_path_cmis.o cmemit_posterior cmscore_path h4score_path hmmscore_path
 
 .PHONY: all clean
