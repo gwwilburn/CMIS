@@ -348,8 +348,8 @@ int msa_score_h4(H4_PROFILE *hmm, ESL_MSA *msa, ESL_SQ **sq, int nseq, int R, fl
          idx = (n*R) + r;
          h4_path_Score(pi[idx], sq[n]->dsq, hmm, mo, &hmmsc_ld[idx]);
          /* get path dump */
-         h4_path_Dump(stdout, pi[idx]);
-         h4_path_DumpAnnotated(stdout, pi[idx], hmm, mo, sq[n]->dsq);
+         //h4_path_Dump(stdout, pi[idx]);
+         //h4_path_DumpAnnotated(stdout, pi[idx], hmm, mo, sq[n]->dsq);
       }
    }
 

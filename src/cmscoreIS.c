@@ -337,7 +337,7 @@ int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng,
    int             b;                                       /* batch index                                 */
    int             r,s;                                     /* alignment sample indices                    */
    int             R           = 1000;                      /* number of sampled alignments per sequence   */
-   int             R_batch     = 1000;                      /* sampled alignment batch size                */
+   int             R_batch     = 10000;                     /* sampled alignment batch size                */
    int             N_batch;                                 /* total number of batches                     */
    int             nBetter;                                 /* number of better alignments we've found     */
    float           fsc;                                     /* forward partial log-odds score, in nats     */
@@ -566,7 +566,7 @@ int Calculate_IS_scores(CM_t *cm, P7_HMM *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng,
             fprintf(scoreprogfp, "%s,%d,%.2f,%.2f\n", sq[i]->name, r, insc, ld);
 
             /* look for paths that make IS scores jump */
-            if ( (r > 1e6) && (ld-ldprev > 0.25))  find_jumps(pr_unsorted, r, R_batch, sq[i], tr_dummy, hmm, gm, fsc, cm, errbuf);
+            //if ( (r > 1e6) && (ld-ldprev > 0.25))  find_jumps(pr_unsorted, r, R_batch, sq[i], tr_dummy, hmm, gm, fsc, cm, errbuf);
 
             ldprev = ld;
          }

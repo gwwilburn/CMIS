@@ -17,7 +17,6 @@ int
 h4_pathalign_Seqs(ESL_SQ **sq, H4_PATH **pi, int nseq, int M, int allcons, H4_PROFILE *hmm, ESL_MSA **ret_msa)
 {
    ESL_MSA            *msa        = NULL;       /* new msa to return                                                   */
-   const ESL_ALPHABET *abc        = sq[0]->abc; /* alphabet                                                            */
    int                *inscount   = NULL;       /* array of max gaps between aligned columns                           */
    int                *matmap     = NULL;       /* matmap[k] = apos of match k matmap[1..M] = [1..alen]                */
    int                *matuse     = NULL;       /* TRUE if an alignment column is associated with match state k [1..M] */
@@ -260,7 +259,7 @@ make_digital_msa(ESL_SQ **sq, const ESL_MSA *premsa, H4_PATH **pi, int nseq, con
 
                   /* set MSA element to appropriate character */
                   msa->ax[idx][apos] = sq[idx]->dsq[i];
-                  /fprintf(stdout, "\tFlanking state! i = %d, a = %d, k = %d, residue = %d\n", i, apos, k, msa->ax[idx][apos]);
+                  //fprintf(stdout, "\tFlanking state! i = %d, a = %d, k = %d, residue = %d\n", i, apos, k, msa->ax[idx][apos]);
                   /* increment the sequence postion and MSA column indices */
                   apos++;
                }
