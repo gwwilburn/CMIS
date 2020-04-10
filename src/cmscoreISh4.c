@@ -34,6 +34,7 @@
 int Calculate_IS_scores(CM_t *cm, H4_PROFILE *hmm, ESL_SQ **sq, ESL_RANDOMNESS *rng, CMIS_SCORESET *cmis_ss, ESL_MSA **msa, char *scoreprogfile, char *aliprogfile, int start, int end, int totseq, int user_R, int A, int verbose);
 int map_ss_cons(CM_t *cm, ESL_MSA *msa, char *errbuf);
 int find_jumps(double *pr_unsorted, int r, int R_batch, ESL_SQ *sq, H4_PATH **pi, H4_PROFILE *hmm, H4_MODE *mo, float fsc, CM_t *cm, Parsetree_t **pstr, char *errbuf);
+char *strsafe(char *dest, const char *src);
 
 static ESL_OPTIONS options[] = {
         /* name              type        default    env range togs  reqs  incomp            help                                                     docgroup */
@@ -310,7 +311,7 @@ int Calculate_IS_scores(CM_t *cm, H4_PROFILE *hmm, ESL_SQ **sq, ESL_RANDOMNESS *
    int             r,s;                                     /* alignment sample indices                      */
    int             R           = 1000;                      /* number of sampled alignments per sequence     */
    //int             R_batch     = 10;                        /* sampled alignment batch size                  */
-   int             R_batch     = 10000;                    /* sampled alignment batch size                  */
+   int             R_batch     = 1000;                      /* sampled alignment batch size                  */
    int             N_batch;                                 /* total number of batches                       */
    int             nBetter;                                 /* number of better alignments we've found       */
    int             allcons     = 1;                         /* bool for keeping all consensus columns in MSA */
@@ -639,12 +640,17 @@ int find_jumps(double *pr_unsorted, int r, int R_batch, ESL_SQ *sq, H4_PATH **pi
    ESL_SQ   **out_sq;                                     /* 1-element seq array for outputting path to an MSA          */
    ESL_MSA  *out_msa             = NULL;                  /* output MSA object                                          */
    FILE      *afp                = NULL;                  /* output alignment file                                      */
-   char       out_msa_path[100];                          /* output MSA filepath                                        */
+   char       out_msa_path[200];                          /* output MSA filepath                                        */
+   char       sqname_safe[100];                           /* sequence name with '/' replace with '_'                    */
    int        outfmt             = eslMSAFILE_STOCKHOLM;  /* output MSA format. I am unwavering on this matter.         */
    int        njump              = 0;                     /* keep track of number of jumping paths in this batch        */
    int        status;                                     /* esl return code                                            */
 
-   fprintf(stdout, "in find jumps. r: %d\n", r);
+   strsafe(sqname_safe, sq->name);
+
+   //fprintf(stdout, "in find jumps. r: %d\n", r);
+   //fprintf(stdout, "sqname_safe: %s\n", sqname_safe);
+
    /* allocate memory */
    ESL_ALLOC(out_pi, sizeof(H4_PATH *));
    ESL_ALLOC(out_sq, sizeof(ESL_SQ *));
@@ -695,7 +701,7 @@ int find_jumps(double *pr_unsorted, int r, int R_batch, ESL_SQ *sq, H4_PATH **pi
          if (map_ss_cons(cm, out_msa, errbuf) != eslOK) ESL_FAIL(eslFAIL, errbuf, "Issue running map_ss_cons from find_jumps\n");
 
          /* create unique output MSA path */
-         sprintf(out_msa_path,"%s_path_%d.sto", sq->name, s);
+         sprintf(out_msa_path,"%s_path_%d.sto", sqname_safe, s);
 
          /* write the msa file */
          afp = fopen(out_msa_path, "w");
@@ -790,3 +796,20 @@ int map_ss_cons(CM_t *cm, ESL_MSA *msa, char *errbuf) {
       return status;
 
 }
+
+
+char *strsafe(char *dest, const char *src)
+{
+
+   int i;
+   for (i=0; src[i] != '\0'; i++) {
+      if (src[i] == '/') dest[i] = '_';
+      else               dest[i] = src[i];
+   }
+
+   dest[i] = '\0';
+
+   return dest;
+
+}
+
