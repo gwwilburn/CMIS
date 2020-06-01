@@ -644,7 +644,7 @@ int find_jumps(double *pr_unsorted, int r, int R_batch, ESL_SQ *sq, H4_PATH **pi
    char       sqname_safe[100];                           /* sequence name with '/' replace with '_'                    */
    int        outfmt             = eslMSAFILE_STOCKHOLM;  /* output MSA format. I am unwavering on this matter.         */
    int        njump              = 0;                     /* keep track of number of jumping paths in this batch        */
-   int        status;                                     /* esl return code                                            */
+   int        status             = 0;                     /* esl return code                                            */
 
    strsafe(sqname_safe, sq->name);
 
@@ -688,7 +688,7 @@ int find_jumps(double *pr_unsorted, int r, int R_batch, ESL_SQ *sq, H4_PATH **pi
       h4_path_Score(pi[t], sq->dsq, hmm, mo, &hmmsc_ld);
 
       /* put path that causes jump in an output MSA file */
-      if (abs(ld-ldprev) > 0.25) {
+      if (fabsf(ld-ldprev) > 0.25) {
          if (njump > 0) {
             h4_path_Destroy(out_pi[0]);
             esl_msa_Destroy(out_msa);
