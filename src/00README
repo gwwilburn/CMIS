@@ -1,6 +1,0 @@
-CMIS: scoring sequences with Infernal CM's via importance sampling.
-
-To install:
-
-cd src
-make
