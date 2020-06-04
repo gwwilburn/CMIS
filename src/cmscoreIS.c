@@ -738,7 +738,7 @@ int find_jumps(double *pr_unsorted, int r, int R_batch, ESL_SQ *sq, P7_TRACE **t
 
 
       /* put path that causes jump in an output MSA file */
-      if (abs(ld-ldprev) > 0.25) {
+      if (fabsf(ld-ldprev) > 0.25) {
 
          if (njump > 0) {
             p7_trace_Destroy(out_tr[0]);
