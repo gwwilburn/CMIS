@@ -30,22 +30,22 @@ h4_path_cmis: h4_path_cmis.c
 	${CC} ${CFLAGS} -c -o h4_path_cmis.o ${IFLAGS} h4_path_cmis.c
 
 cmscoreIS: cmscoreIS.c
-	${CC} ${CFLAGS} -o cmscoreIS ${IFLAGS} ${LFLAGS} ${SLIBS} ${LIBS} cmscoreIS.c cmis_scoreset.o cmis_trace.o
+	${CC} ${CFLAGS} -o cmscoreIS ${IFLAGS} ${LFLAGS} cmscoreIS.c cmis_scoreset.o cmis_trace.o  ${SLIBS} ${LIBS}
 
 cmscoreISh4: cmscoreISh4.c
-	${CC} ${CFLAGS} -o cmscoreISh4 ${IFLAGS} ${LFLAGS} ${SLIBS} ${LIBS} cmscoreISh4.c cmis_scoreset.o cmis_trace.o h4_path_cmis.o h4_pathalign.o
+	${CC} ${CFLAGS} -o cmscoreISh4 ${IFLAGS} ${LFLAGS} cmscoreISh4.c cmis_scoreset.o cmis_trace.o h4_path_cmis.o h4_pathalign.o  ${SLIBS} ${LIBS}
 
 cmscore_path: cmscore_path.c
-	${CC} ${CFLAGS} -o cmscore_path ${IFLAGS} ${LFLAGS} ${SLIBS} ${LIBS} cmscore_path.c
+	${CC} ${CFLAGS} -o cmscore_path ${IFLAGS} ${LFLAGS} cmscore_path.c  ${SLIBS} ${LIBS}
 
 cmemit_posterior: cmemit_posterior.c
-	${CC} ${CFLAGS} -o cmemit_posterior ${IFLAGS} ${LFLAGS} ${SLIBS} ${LIBS} cmemit_posterior.c h4_path_cmis.o
+	${CC} ${CFLAGS} -o cmemit_posterior ${IFLAGS} ${LFLAGS} cmemit_posterior.c h4_path_cmis.o  ${SLIBS} ${LIBS}
 
 h4score_path: h4score_path.c
-	${CC} ${CFLAGS} -o h4score_path ${IFLAGS} ${LFLAGS} ${SLIBS} ${LIBS} h4score_path.c h4_path_cmis.o
+	${CC} ${CFLAGS} -o h4score_path ${IFLAGS} ${LFLAGS} h4score_path.c h4_path_cmis.o  ${SLIBS} ${LIBS}
 
 hmmscore_path: hmmscore_path.c
-	${CC} ${CFLAGS} -o hmmscore_path ${IFLAGS} ${LFLAGS} ${SLIBS} ${LIBS} hmmscore_path.c
+	${CC} ${CFLAGS} -o hmmscore_path ${IFLAGS} ${LFLAGS} hmmscore_path.c  ${SLIBS} ${LIBS}
 clean:
 	rm -f cmscoreIS cmscoreISh4 cmemit_posterior cmscore_path h4score_path hmmscore_path cmis_scoreset.o cmis_trace.o h4_pathalign.o h4_path_cmis.o
 
